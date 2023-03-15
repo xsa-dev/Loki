@@ -30,6 +30,12 @@ The Windows binary is compiled with PyInstaller and should run as x86 applicatio
 
 ## How-To Run LOKI and Analyse the Reports
 
+Use LOKI on Mac OS X
+Download Yara sources from here
+Change to folder yara-python
+Run python setup.py install
+Also install the requirement mentioned above by sudo pip install colorama
+
 ### Run
 
   - Download the newest version of LOKI from the [releases](https://github.com/Neo23x0/Loki/releases) section
