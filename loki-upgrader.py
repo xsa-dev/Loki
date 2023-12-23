@@ -15,14 +15,17 @@ import os
 import argparse
 import traceback
 from sys import platform as _platform
+try:
+    from urlparse import urlparse 
+except ImportError:
+    from urllib.parse import urlparse
+from os.path import exists
 
 # Win32 Imports
 if _platform == "win32":
     try:
-        import wmi
         import win32api
-        from win32com.shell import shell
-    except Exception as e:
+    except Exception:
         platform = "linux"  # crazy guess
 
 
@@ -36,6 +39,32 @@ elif _platform == "darwin":
     platform = "macos"
 elif _platform == "win32":
     platform = "windows"
+
+def needs_update(sig_url):
+    try:
+        o=urlparse(sig_url)
+        path=o.path.split('/')
+        branch=path[4].split('.')[0]
+        path.pop(len(path)-1)
+        path.pop(len(path)-1)
+        url = o.scheme+'://api.'+o.netloc+'/repos'+'/'.join(path)+'/commits/'+branch
+        response_info = urlopen(url)
+        j = json.load(response_info)
+        sha=j['sha']
+        cache='_'.join(path)+'.cache'
+        changed=False
+        if exists(cache):
+            with open(cache, "r") as file:
+                old_sha = file.read().rstrip()
+            if sha != old_sha:
+                changed=True
+        else:
+            with open(cache, "w") as file:
+                file.write(sha)
+                changed=True
+        return changed
+    except Exception:
+        return True
 
 
 class LOKIUpdater(object):
@@ -58,81 +87,84 @@ class LOKIUpdater(object):
     def update_signatures(self, clean=False):
         try:
             for sig_url in self.UPDATE_URL_SIGS:
-                # Downloading current repository
-                try:
-                    self.logger.log("INFO", "Upgrader", "Downloading %s ..." % sig_url)
-                    response = urlopen(sig_url)
-                except Exception as e:
-                    if self.debug:
-                        traceback.print_exc()
-                    self.logger.log("ERROR", "Upgrader", "Error downloading the signature database - "
-                                                         "check your Internet connection")
-                    sys.exit(1)
+                if needs_update(sig_url):
+                    # Downloading current repository
+                    try:
+                        self.logger.log("INFO", "Upgrader", "Downloading %s ..." % sig_url)
+                        response = urlopen(sig_url)
+                    except Exception:
+                        if self.debug:
+                            traceback.print_exc()
+                        self.logger.log("ERROR", "Upgrader", "Error downloading the signature database - "
+                                                            "check your Internet connection")
+                        sys.exit(1)
 
-                # Preparations
-                try:
-                    sigDir = os.path.join(self.application_path, os.path.abspath('signature-base/'))
-                    if clean:
-                        self.logger.log("INFO", "Upgrader", "Cleaning directory '%s'" % sigDir)
-                        shutil.rmtree(sigDir)
-                    for outDir in ['', 'iocs', 'yara', 'misc']:
-                        fullOutDir = os.path.join(sigDir, outDir)
-                        if not os.path.exists(fullOutDir):
-                            os.makedirs(fullOutDir)
-                except Exception as e:
-                    if self.debug:
-                        traceback.print_exc()
-                    self.logger.log("ERROR", "Upgrader", "Error while creating the signature-base directories")
-                    sys.exit(1)
+                    # Preparations
+                    try:
+                        sigDir = os.path.join(self.application_path, os.path.abspath('signature-base/'))
+                        if clean:
+                            self.logger.log("INFO", "Upgrader", "Cleaning directory '%s'" % sigDir)
+                            shutil.rmtree(sigDir)
+                        for outDir in ['', 'iocs', 'yara', 'misc']:
+                            fullOutDir = os.path.join(sigDir, outDir)
+                            if not os.path.exists(fullOutDir):
+                                os.makedirs(fullOutDir)
+                    except Exception:
+                        if self.debug:
+                            traceback.print_exc()
+                        self.logger.log("ERROR", "Upgrader", "Error while creating the signature-base directories")
+                        sys.exit(1)
 
-                # Read ZIP file
-                try:
-                    zipUpdate = zipfile.ZipFile(io.BytesIO(response.read()))
-                    for zipFilePath in zipUpdate.namelist():
-                        sigName = os.path.basename(zipFilePath)
-                        if zipFilePath.endswith("/"):
-                            continue
-                        # Skip incompatible rules
-                        skip = False
-                        for incompatible_rule in self.INCOMPATIBLE_RULES:
-                            if sigName.endswith(incompatible_rule):
-                                self.logger.log("NOTICE", "Upgrader", "Skipping incompatible rule %s" % sigName)
-                                skip = True
-                        if skip:
-                            continue
-                        # Extract the rules
-                        self.logger.log("DEBUG", "Upgrader", "Extracting %s ..." % zipFilePath)
-                        if "/iocs/" in zipFilePath and zipFilePath.endswith(".txt"):
-                            targetFile = os.path.join(sigDir, "iocs", sigName)
-                        elif "/yara/" in zipFilePath and zipFilePath.endswith(".yar"):
-                            targetFile = os.path.join(sigDir, "yara", sigName)
-                        elif "/misc/" in zipFilePath and zipFilePath.endswith(".txt"):
-                            targetFile = os.path.join(sigDir, "misc", sigName)
-                        elif zipFilePath.endswith(".yara"):
-                            targetFile = os.path.join(sigDir, "yara", sigName)
-                        else:
-                            continue
+                    # Read ZIP file
+                    try:
+                        zipUpdate = zipfile.ZipFile(io.BytesIO(response.read()))
+                        for zipFilePath in zipUpdate.namelist():
+                            sigName = os.path.basename(zipFilePath)
+                            if zipFilePath.endswith("/"):
+                                continue
+                            # Skip incompatible rules
+                            skip = False
+                            for incompatible_rule in self.INCOMPATIBLE_RULES:
+                                if sigName.endswith(incompatible_rule):
+                                    self.logger.log("NOTICE", "Upgrader", "Skipping incompatible rule %s" % sigName)
+                                    skip = True
+                            if skip:
+                                continue
+                            # Extract the rules
+                            self.logger.log("DEBUG", "Upgrader", "Extracting %s ..." % zipFilePath)
+                            if "/iocs/" in zipFilePath and zipFilePath.endswith(".txt"):
+                                targetFile = os.path.join(sigDir, "iocs", sigName)
+                            elif "/yara/" in zipFilePath and zipFilePath.endswith(".yar"):
+                                targetFile = os.path.join(sigDir, "yara", sigName)
+                            elif "/misc/" in zipFilePath and zipFilePath.endswith(".txt"):
+                                targetFile = os.path.join(sigDir, "misc", sigName)
+                            elif zipFilePath.endswith(".yara"):
+                                targetFile = os.path.join(sigDir, "yara", sigName)
+                            else:
+                                continue
 
-                        # New file
-                        if not os.path.exists(targetFile):
-                            self.logger.log("INFO", "Upgrader", "New signature file: %s" % sigName)
+                            # New file
+                            if not os.path.exists(targetFile):
+                                self.logger.log("INFO", "Upgrader", "New signature file: %s" % sigName)
 
-                        # Extract file
-                        source = zipUpdate.open(zipFilePath)
-                        target = open(targetFile, "wb")
-                        with source, target:
-                            shutil.copyfileobj(source, target)
-                        target.close()
-                        source.close()
+                            # Extract file
+                            source = zipUpdate.open(zipFilePath)
+                            target = open(targetFile, "wb")
+                            with source, target:
+                                shutil.copyfileobj(source, target)
+                            target.close()
+                            source.close()
 
-                except Exception as e:
-                    if self.debug:
-                        traceback.print_exc()
-                    self.logger.log("ERROR", "Upgrader", "Error while extracting the signature files from the download "
-                                                         "package")
-                    sys.exit(1)
+                    except Exception:
+                        if self.debug:
+                            traceback.print_exc()
+                        self.logger.log("ERROR", "Upgrader", "Error while extracting the signature files from the download "
+                                                            "package")
+                        sys.exit(1)
+                else:
+                    self.logger.log("INFO", "Upgrader", "%s is up to date." % sig_url)
 
-        except Exception as e:
+        except Exception:
             if self.debug:
                 traceback.print_exc()
             return False
@@ -151,7 +183,7 @@ class LOKIUpdater(object):
                 zip_url = data['assets'][0]['browser_download_url']
                 self.logger.log("INFO", "Upgrader", "Downloading latest release %s ..." % zip_url)
                 response_zip = urlopen(zip_url)
-            except Exception as e:
+            except Exception:
                 if self.debug:
                     traceback.print_exc()
                 self.logger.log("ERROR", "Upgrader", "Error downloading the loki update - check your Internet connection")
@@ -174,7 +206,7 @@ class LOKIUpdater(object):
                         if not os.path.exists(os.path.dirname(targetFile)):
                             if os.path.dirname(targetFile) != '':
                                 os.makedirs(os.path.dirname(targetFile))
-                    except Exception as e:
+                    except Exception:
                         if self.debug:
                             self.logger.log("DEBUG", "Upgrader", "Cannot create dir name '%s'" % os.path.dirname(targetFile))
                             traceback.print_exc()
@@ -187,19 +219,19 @@ class LOKIUpdater(object):
                             if self.debug:
                                 self.logger.log("DEBUG", "Upgrader", "Successfully extracted '%s'" % targetFile)
                         target.close()
-                    except Exception as e:
+                    except Exception:
                         self.logger.log("ERROR", "Upgrader", "Cannot extract '%s'" % targetFile)
                         if self.debug:
                             traceback.print_exc()
 
-            except Exception as e:
+            except Exception:
                 if self.debug:
                     traceback.print_exc()
                 self.logger.log("ERROR", "Upgrader",
                                 "Error while extracting the signature files from the download package")
                 sys.exit(1)
 
-        except Exception as e:
+        except Exception:
             if self.debug:
                 traceback.print_exc()
             return False
@@ -219,7 +251,7 @@ def get_application_path():
         #if args.debug:
         #    logger.log("DEBUG", "Init", "Application Path: %s" % application_path)
         return application_path
-    except Exception as e:
+    except Exception:
         print("Error while evaluation of application path")
         traceback.print_exc()
 
